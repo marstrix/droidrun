@@ -351,6 +351,78 @@ class AdbTools(Tools):
         return await self.tap_by_index(index)
 
     @Tools.ui_action
+    async def tap_by_resource_id(self, resource_id: str) -> str:
+        """
+        Tap on a UI element by its resource ID.
+
+        This function searches for an element with the given resource ID in the
+        raw accessibility tree and taps on its center coordinates.
+
+        Args:
+            resource_id: Resource ID to search for (can be full ID like
+                        "com.example.app:id/button" or short ID like "button")
+
+        Returns:
+            Result message indicating success or failure
+        """
+        await self._ensure_connected()
+
+        # Import the necessary modules
+        from droidrun.tools.element_search import Filters, get_element_center
+
+        # Check if we have cached tree data
+        if not self.raw_tree_cache:
+            return "Error: No UI tree cached. Call get_state() first to refresh the UI state."
+
+        try:
+            # Search for elements with matching resource ID
+            id_filter = Filters.id_matches(resource_id)
+            matching_elements = id_filter([self.raw_tree_cache])
+
+            if not matching_elements:
+                return f"Error: No element found with resource ID '{resource_id}'"
+
+            # Get the first matching element
+            element = matching_elements[0]
+
+            # Get center coordinates
+            x, y = get_element_center(element)
+
+            # Tap at the coordinates
+            await self.device.click(x, y)
+            print(f"Tapped element with resource ID '{resource_id}' at coordinates ({x}, {y})")
+
+            # Emit tap event for trajectory recording
+            if self._ctx:
+                element_text = element.get("text", "No text")
+                element_class = element.get("className", "Unknown class")
+                element_resource_id = element.get("resourceId", "")
+
+                tap_event = TapActionEvent(
+                    action_type="tap",
+                    description=f"Tap element with resource ID '{resource_id}': '{element_text}' ({element_class}) at coordinates ({x}, {y})",
+                    x=x,
+                    y=y,
+                    element_index=-1,  # No index for resource ID taps
+                    element_text=element_text,
+                    element_bounds=f"{element.get('boundsInScreen', {})}",
+                )
+                self._ctx.write_event_to_stream(tap_event)
+
+            # Create a descriptive response
+            response_parts = []
+            response_parts.append(f"Tapped element with resource ID '{resource_id}'")
+            response_parts.append(f"Text: '{element.get('text', 'No text')}'")
+            response_parts.append(f"Class: {element.get('className', 'Unknown class')}")
+            response_parts.append(f"Clickable: {element.get('isClickable', False)}")
+            response_parts.append(f"Coordinates: ({x}, {y})")
+
+            return " | ".join(response_parts)
+
+        except Exception as e:
+            return f"Error tapping element with resource ID '{resource_id}': {str(e)}"
+
+    @Tools.ui_action
     async def swipe(
         self,
         start_x: int,
