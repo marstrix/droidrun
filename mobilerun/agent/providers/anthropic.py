@@ -7,9 +7,11 @@ from typing import Any
 
 ANTHROPIC_API_DEFAULT_MODEL = "claude-sonnet-4-6"
 ANTHROPIC_OAUTH_DEFAULT_MODEL = "claude-opus-4-7"
+ANTHROPIC_FABLE_5_1_MODEL = "claude-fable-5-1"
 
 ANTHROPIC_API_MODELS = (
     ANTHROPIC_API_DEFAULT_MODEL,
+    ANTHROPIC_FABLE_5_1_MODEL,
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-fable-5",
@@ -20,6 +22,7 @@ ANTHROPIC_API_MODELS = (
 
 ANTHROPIC_OAUTH_MODELS = (
     ANTHROPIC_OAUTH_DEFAULT_MODEL,
+    ANTHROPIC_FABLE_5_1_MODEL,
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-fable-5",
@@ -32,6 +35,7 @@ ANTHROPIC_OAUTH_MODELS = (
 ANTHROPIC_MODEL_CONTEXT_WINDOWS = {
     "claude-opus-5": 1_000_000,
     "claude-sonnet-5": 1_000_000,
+    ANTHROPIC_FABLE_5_1_MODEL: 1_000_000,
     "claude-fable-5": 1_000_000,
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-7": 1_000_000,
@@ -47,6 +51,7 @@ ANTHROPIC_MODELS_WITHOUT_SAMPLING_PARAMS = frozenset(
     {
         "claude-opus-5",
         "claude-sonnet-5",
+        ANTHROPIC_FABLE_5_1_MODEL,
         "claude-fable-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
@@ -63,6 +68,7 @@ ANTHROPIC_HIGHRES_MODELS = frozenset(
         "claude-opus-4-8",
         "claude-opus-5",
         "claude-sonnet-5",
+        ANTHROPIC_FABLE_5_1_MODEL,
         "claude-fable-5",
         "claude-mythos-5",
     }

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from llama_index.core.base.llms.types import ChatMessage, MessageRole
 
@@ -12,12 +14,14 @@ from mobilerun.agent.utils.llm_picker import load_llm
 @pytest.mark.parametrize(
     "model",
     (
+        "gemini-3.8-flash-tiered",
+        "gemini-3.7-flash-tiered",
         "gemini-3.6-flash-low",
         "gemini-3.6-flash-medium",
         "gemini-3.6-flash-high",
     ),
 )
-def test_gemini_oauth_profile_sends_new_effort_models_verbatim(
+def test_gemini_oauth_profile_sends_supported_models_verbatim(
     tmp_path, model: str
 ) -> None:
     variant = resolve_provider_variant("gemini", "oauth")
@@ -47,12 +51,256 @@ def test_gemini_oauth_profile_sends_new_effort_models_verbatim(
     assert payload["model"] == model
 
 
-def _gemini_llm():
+def _gemini_llm(model: str | None = None):
     from mobilerun.agent.utils.oauth.gemini_oauth_code_assist_llm import (
         GeminiOAuthCodeAssistLLM,
     )
 
-    return GeminiOAuthCodeAssistLLM(access_token="test-token", credential_path=None)
+    kwargs = {"model": model} if model is not None else {}
+    return GeminiOAuthCodeAssistLLM(
+        access_token="test-token", credential_path=None, **kwargs
+    )
+
+
+class _SSEStreamResponse:
+    ok = True
+    status_code = 200
+    text = ""
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self, decode_unicode):
+        assert decode_unicode is True
+        for chunk in self.chunks:
+            yield f"data: {json.dumps(chunk)}"
+            yield ""
+
+
+class _SSESession:
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.calls = []
+
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return _SSEStreamResponse(self.chunks)
+
+
+def _text_chunk(text: str, *, final: bool = False):
+    response = {
+        "candidates": [{"content": {"parts": [{"text": text}]}}],
+    }
+    if final:
+        response.update(
+            {
+                "usageMetadata": {"totalTokenCount": 4},
+                "modelVersion": "tiered-test-version",
+            }
+        )
+    return {"traceId": f"trace-{text}", "response": response}
+
+
+@pytest.mark.parametrize(
+    "model", ("gemini-3.8-flash-tiered", "gemini-3.7-flash-tiered")
+)
+def test_tiered_complete_routes_exact_model_over_sse(model: str) -> None:
+    llm = _gemini_llm(model)
+    session = _SSESession([_text_chunk("O"), _text_chunk("K", final=True)])
+    llm._session = session
+
+    response = llm.complete("Reply OK", generation_config={"temperature": 0.2})
+
+    assert response.text == "OK"
+    assert response.additional_kwargs == {
+        "trace_id": "trace-K",
+        "usage": {"totalTokenCount": 4},
+        "model_version": "tiered-test-version",
+    }
+    [(url, call)] = session.calls
+    assert url.endswith("/v1internal:streamGenerateContent")
+    assert call["params"] == {"alt": "sse"}
+    assert call["headers"]["Accept"] == "text/event-stream"
+    assert call["stream"] is True
+    assert call["json"]["model"] == model
+    request = call["json"]["request"]
+    assert request["generationConfig"] == {"temperature": 0.2}
+    assert request["contents"] == [{"role": "user", "parts": [{"text": "Reply OK"}]}]
+
+
+@pytest.mark.parametrize(
+    "model", ("gemini-3.8-flash-tiered", "gemini-3.7-flash-tiered")
+)
+def test_tiered_stream_chat_routes_exact_model_and_image_payload(model: str) -> None:
+    import base64
+
+    from llama_index.core.base.llms.types import ImageBlock, TextBlock
+
+    png = _tiny_image("PNG")
+    llm = _gemini_llm(model)
+    session = _SSESession([_text_chunk("first"), _text_chunk(" second")])
+    llm._session = session
+
+    chunks = list(
+        llm.stream_chat(
+            [
+                ChatMessage(
+                    role=MessageRole.USER,
+                    blocks=[TextBlock(text="Inspect"), ImageBlock(image=png)],
+                )
+            ],
+            generation_config={"temperature": 0.2},
+        )
+    )
+
+    assert [chunk.delta for chunk in chunks] == ["first", " second"]
+    assert [chunk.message.content for chunk in chunks] == ["first", "first second"]
+    [(url, call)] = session.calls
+    assert url.endswith("/v1internal:streamGenerateContent")
+    assert call["params"] == {"alt": "sse"}
+    assert call["stream"] is True
+    assert call["json"]["model"] == model
+    request = call["json"]["request"]
+    assert request["generationConfig"] == {"temperature": 0.2}
+    parts = request["contents"][0]["parts"]
+    assert parts[0] == {"text": "Inspect"}
+    assert parts[1]["inlineData"]["mimeType"] == "image/png"
+    assert base64.b64decode(parts[1]["inlineData"]["data"]) == png
+
+
+class _CatalogResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class _CatalogSession:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def post(self, url, headers, json, timeout):
+        return _CatalogResponse(self.payload)
+
+
+def _models_from_catalog(payload):
+    llm = _gemini_llm()
+    llm._session = _CatalogSession(payload)
+    return llm.fetch_available_models(access_token="catalog-token")
+
+
+def test_fetch_available_models_uses_friendly_names_for_tiered_gemini_entries():
+    models = _models_from_catalog(
+        {
+            "models": {
+                "gemini-3.8-flash-tiered": {
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+                    "supportsImages": True,
+                },
+                "gemini-3.7-flash-tiered": {
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+                    "supportsImages": True,
+                },
+                "gemini-3.6-flash-high": {
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+                    "displayName": "Gemini 3.6 Flash (High)",
+                    "supportsImages": True,
+                },
+            }
+        }
+    )
+
+    assert models == [
+        {
+            "id": "gemini-3.8-flash-tiered",
+            "display_name": "gemini-3.8-flash",
+            "supports_images": True,
+        },
+        {
+            "id": "gemini-3.7-flash-tiered",
+            "display_name": "gemini-3.7-flash",
+            "supports_images": True,
+        },
+        {
+            "id": "gemini-3.6-flash-high",
+            "display_name": "Gemini 3.6 Flash (High)",
+            "supports_images": True,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("model_id", "expected_display_name"),
+    [
+        ("gemini-3.8-flash-tiered", "gemini-3.8-flash"),
+        ("gemini-3.7-flash-tiered", "gemini-3.7-flash"),
+    ],
+)
+def test_fetch_available_models_overrides_tiered_provider_display_name(
+    model_id: str, expected_display_name: str
+) -> None:
+    models = _models_from_catalog(
+        {
+            "models": {
+                model_id: {
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+                    "displayName": f"Google label for {model_id}",
+                    "supportsImages": True,
+                }
+            }
+        }
+    )
+
+    assert models == [
+        {
+            "id": model_id,
+            "display_name": expected_display_name,
+            "supports_images": True,
+        }
+    ]
+
+
+def test_fetch_available_models_rejects_unsafe_nameless_or_hidden_entries():
+    models = _models_from_catalog(
+        {
+            "models": {
+                "gemini-command-aux": {
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+                },
+                "gemini-internal-tiered": {
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+                    "isInternal": True,
+                },
+                "gemini-deprecated-tiered": {
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+                },
+                "gemini-wrong-provider-tiered": {
+                    "apiProvider": "API_PROVIDER_OTHER",
+                },
+                "gemini-malformed-tiered": "not metadata",
+                "gemini-visible": {
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+                    "displayName": "Gemini Visible",
+                },
+            },
+            "deprecatedModelIds": {"gemini-deprecated-tiered": {}},
+        }
+    )
+
+    assert models == [
+        {
+            "id": "gemini-visible",
+            "display_name": "Gemini Visible",
+            "supports_images": False,
+        }
+    ]
 
 
 def _tiny_image(fmt: str) -> bytes:

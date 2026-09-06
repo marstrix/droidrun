@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer as HTTPServer
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -63,6 +63,12 @@ DEFAULT_OPENAI_OAUTH_SCOPE = (
     "openid profile email offline_access api.connectors.read api.connectors.invoke"
 )
 _OPENAI_LOGIN_TIMEOUT_MESSAGE = "OpenAI OAuth login timed out."
+_GPT_6_ASTRA_MODEL = "gpt-6-astra"
+_GPT_6_ASTRA_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+_GPT_6_ASTRA_UNSUPPORTED_PARAMS = frozenset(
+    {"temperature", "top_p", "logprobs", "top_logprobs"}
+)
+_GPT_6_ASTRA_UNSUPPORTED_INCLUDE = "message.output_text.logprobs"
 
 
 def _b64_no_pad(raw: bytes) -> str:
@@ -579,6 +585,10 @@ class OpenAIOAuthSessionManager:
 class OpenAIOAuth(OpenAI):
     """OpenAI LLM backed by ChatGPT OAuth refresh/access tokens."""
 
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+    ] = None
+
     @classmethod
     def class_name(cls) -> str:
         return "OpenAIOAuth"
@@ -1053,6 +1063,43 @@ class OpenAIOAuth(OpenAI):
 
         return normalized
 
+    def _sanitize_gpt_6_astra_kwargs(
+        self, runtime_kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        if self.model != _GPT_6_ASTRA_MODEL:
+            return runtime_kwargs
+
+        merged: dict[str, Any] = {}
+        if self.reasoning_effort is not None:
+            merged["reasoning"] = {"effort": self.reasoning_effort}
+        merged.update(self.additional_kwargs or {})
+        merged.update(runtime_kwargs)
+
+        for key in _GPT_6_ASTRA_UNSUPPORTED_PARAMS:
+            merged.pop(key, None)
+
+        include = merged.get("include")
+        if isinstance(include, (list, tuple)):
+            filtered_include = [
+                value for value in include if value != _GPT_6_ASTRA_UNSUPPORTED_INCLUDE
+            ]
+            merged["include"] = filtered_include or None
+
+        reasoning = merged.get("reasoning")
+        if reasoning is not None and not isinstance(reasoning, dict):
+            raise ValueError(
+                f"{_GPT_6_ASTRA_MODEL} reasoning must be a mapping with an "
+                "optional 'effort' value."
+            )
+        effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+        if effort is not None and effort not in _GPT_6_ASTRA_REASONING_EFFORTS:
+            supported = "low, medium, high, xhigh, or max"
+            raise ValueError(
+                f"{_GPT_6_ASTRA_MODEL} does not support reasoning effort "
+                f"{effort!r}; use {supported}."
+            )
+        return merged
+
     def _collect_stream_text_sync(self, events: Any) -> tuple[str, Any]:
         text_parts: list[str] = []
         final_response: Any = None
@@ -1121,6 +1168,7 @@ class OpenAIOAuth(OpenAI):
 
     @llm_retry_decorator
     def _chat(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResponse:
+        kwargs = self._sanitize_gpt_6_astra_kwargs(kwargs)
         self._ensure_access_token()
         client = self._get_client()
         payload = self._build_responses_payload(messages)
@@ -1163,6 +1211,7 @@ class OpenAIOAuth(OpenAI):
 
     @llm_retry_decorator
     async def _achat(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResponse:
+        kwargs = self._sanitize_gpt_6_astra_kwargs(kwargs)
         self._ensure_access_token()
         aclient = self._get_aclient()
         payload = self._build_responses_payload(messages)

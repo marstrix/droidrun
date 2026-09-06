@@ -2,6 +2,7 @@ import pytest
 
 from mobilerun.agent.providers.registry import (
     list_models_for_variant,
+    model_display_name_for_variant,
     normalize_model_id_for_variant,
     resolve_provider_variant,
 )
@@ -16,6 +17,7 @@ def test_gemini_api_key_catalog_uses_current_flash_models() -> None:
     assert variant.default_model == "gemini-3.7-flash"
     assert models == (
         "gemini-3.7-flash",
+        "gemini-3.8-flash",
         "gemini-3.5-flash",
         "gemini-3.6-flash",
         "gemini-3.5-flash-lite",
@@ -33,6 +35,8 @@ def test_gemini_oauth_catalog_uses_antigravity_consumer_models() -> None:
     assert variant.default_model == "gemini-3.5-flash-low"
     assert models == (
         "gemini-3.5-flash-low",
+        "gemini-3.8-flash-tiered",
+        "gemini-3.7-flash-tiered",
         "gemini-3.5-flash-extra-low",
         "gemini-3-flash-agent",
         "gemini-3-flash",
@@ -51,6 +55,40 @@ def test_gemini_oauth_catalog_uses_antigravity_consumer_models() -> None:
     assert "gemini-3.1-pro-high" not in models
 
 
+@pytest.mark.parametrize(
+    ("family_id", "auth_mode", "model_id", "expected"),
+    [
+        (
+            "gemini",
+            "oauth",
+            "gemini-3.8-flash-tiered",
+            "gemini-3.8-flash",
+        ),
+        (
+            "gemini",
+            "oauth",
+            "gemini-3.7-flash-tiered",
+            "gemini-3.7-flash",
+        ),
+        (
+            "gemini",
+            "oauth",
+            "gemini-3.6-flash-high",
+            "gemini-3.6-flash-high",
+        ),
+        ("gemini", "api_key", "gemini-3.8-flash", "gemini-3.8-flash"),
+        ("openai", "oauth", "gpt-6-astra", "gpt-6-astra"),
+    ],
+)
+def test_model_display_names_preserve_canonical_ids_except_explicit_overrides(
+    family_id: str,
+    auth_mode: str,
+    model_id: str,
+    expected: str,
+) -> None:
+    assert model_display_name_for_variant(family_id, auth_mode, model_id) == expected
+
+
 def test_anthropic_catalogs_include_claude_5_without_changing_defaults() -> None:
     api_key_variant = resolve_provider_variant("anthropic", "api_key")
     api_key_models = list_models_for_variant("anthropic", "api_key")
@@ -60,6 +98,7 @@ def test_anthropic_catalogs_include_claude_5_without_changing_defaults() -> None
     assert api_key_variant.default_model == "claude-sonnet-4-6"
     assert api_key_models == (
         "claude-sonnet-4-6",
+        "claude-fable-5-1",
         "claude-opus-5",
         "claude-sonnet-5",
         "claude-fable-5",
@@ -70,6 +109,7 @@ def test_anthropic_catalogs_include_claude_5_without_changing_defaults() -> None
     assert oauth_variant.default_model == "claude-opus-4-7"
     assert oauth_models == (
         "claude-opus-4-7",
+        "claude-fable-5-1",
         "claude-opus-5",
         "claude-sonnet-5",
         "claude-fable-5",
@@ -87,6 +127,7 @@ def test_openai_oauth_catalog_hides_unsupported_codex_model() -> None:
     assert variant.default_model == "gpt-5.5"
     assert models == (
         "gpt-5.5",
+        "gpt-6-astra",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -103,6 +144,7 @@ def test_openai_api_key_catalog_uses_current_default_model() -> None:
     assert variant.default_model == "gpt-5.5"
     assert models == (
         "gpt-5.5",
+        "gpt-6-astra",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
         "gpt-5.6-luna",
@@ -131,6 +173,8 @@ def test_default_profiles_use_gemini_3_7_flash() -> None:
         ("oauth", "openai-codex/gpt-5.6", "gpt-5.6-sol"),
         ("api_key", "gpt-5.6-terra", "gpt-5.6-terra"),
         ("oauth", "gpt-5.6-luna", "gpt-5.6-luna"),
+        ("api_key", "gpt-6-astra", "gpt-6-astra"),
+        ("oauth", "gpt-6-astra", "gpt-6-astra"),
     ],
 )
 def test_openai_model_aliases_normalize_to_catalog_ids(
@@ -144,3 +188,8 @@ def test_openai_unknown_models_pass_through(auth_mode: str) -> None:
     model = "vendor/custom-model"
 
     assert normalize_model_id_for_variant("openai", auth_mode, model) == model
+
+
+@pytest.mark.parametrize("auth_mode", ["api_key", "oauth"])
+def test_openai_gpt_6_alias_is_not_invented(auth_mode: str) -> None:
+    assert normalize_model_id_for_variant("openai", auth_mode, "gpt-6") == "gpt-6"

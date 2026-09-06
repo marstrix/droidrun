@@ -243,7 +243,9 @@ def test_exact_xai_configure_forms_keep_provider_and_auth_fixed(
         lambda saved: saved_configs.append(saved),
     )
 
-    def choose_model(models, *, default_model, allow_back=True):  # type: ignore[no-untyped-def]
+    def choose_model(  # type: ignore[no-untyped-def]
+        models, *, family_id, auth_mode, default_model, allow_back=True
+    ):
         model_prompts.append((tuple(models), default_model))
         return default_model
 
@@ -351,7 +353,9 @@ def test_fixed_provider_and_auth_model_back_returns_to_top_level_once(
         lambda saved: saved_configs.append(saved),
     )
 
-    def choose_model(models, *, default_model, allow_back=True):  # type: ignore[no-untyped-def]
+    def choose_model(  # type: ignore[no-untyped-def]
+        models, *, family_id, auth_mode, default_model, allow_back=True
+    ):
         model_prompts.append((tuple(models), default_model))
         return configure_wizard._BACK
 

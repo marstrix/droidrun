@@ -33,6 +33,7 @@ from llama_index.core.llms.callbacks import llm_chat_callback, llm_completion_ca
 from llama_index.core.llms.custom import CustomLLM
 
 from mobilerun.agent.providers.anthropic import (
+    ANTHROPIC_FABLE_5_1_MODEL,
     ANTHROPIC_OAUTH_DEFAULT_MODEL,
     anthropic_model_context_window,
     anthropic_model_omits_sampling_params,
@@ -62,7 +63,11 @@ DEFAULT_SETUP_TOKEN_SCOPE = "user:inference"
 DEFAULT_REFRESH_SCOPE = "user:inference user:profile user:file_upload user:mcp_servers user:sessions:claude_code"
 DEFAULT_OAUTH_BETA = "oauth-2025-04-20"
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
-DEFAULT_CC_VERSION = "2.1.85.000"
+# Model access is Claude Code version-gated, so keep the HTTP user agent and
+# billing marker derived from the same verified-compatible client version.
+DEFAULT_CLAUDE_CODE_VERSION = "2.1.259"
+DEFAULT_USER_AGENT = f"claude-cli/{DEFAULT_CLAUDE_CODE_VERSION}"
+DEFAULT_CC_VERSION = f"{DEFAULT_CLAUDE_CODE_VERSION}.000"
 DEFAULT_CC_ENTRYPOINT = "cli"
 _IGNORED_REQUEST_KWARGS = {
     "formatted",
@@ -148,7 +153,7 @@ class AnthropicOAuthLLM(CustomLLM):
     api_base: str = Field(default=DEFAULT_API_BASE)
     anthropic_version: str = Field(default=DEFAULT_ANTHROPIC_VERSION)
     oauth_beta: str = Field(default=DEFAULT_OAUTH_BETA)
-    user_agent: Optional[str] = Field(default="claude-cli/2.1.85")
+    user_agent: Optional[str] = Field(default=DEFAULT_USER_AGENT)
 
     billing_header_mode: Literal["auto", "always", "never"] = Field(default="auto")
     cc_version: str = Field(default=DEFAULT_CC_VERSION)
@@ -185,7 +190,7 @@ class AnthropicOAuthLLM(CustomLLM):
         api_base: str = DEFAULT_API_BASE,
         anthropic_version: str = DEFAULT_ANTHROPIC_VERSION,
         oauth_beta: str = DEFAULT_OAUTH_BETA,
-        user_agent: Optional[str] = "claude-cli/2.1.85",
+        user_agent: Optional[str] = DEFAULT_USER_AGENT,
         billing_header_mode: Literal["auto", "always", "never"] = "auto",
         cc_version: str = DEFAULT_CC_VERSION,
         cc_entrypoint: str = DEFAULT_CC_ENTRYPOINT,
@@ -239,7 +244,7 @@ class AnthropicOAuthLLM(CustomLLM):
             num_output=self.max_tokens or -1,
             model_name=self.model,
             is_chat_model=True,
-            is_function_calling_model=True,
+            is_function_calling_model=self.model != ANTHROPIC_FABLE_5_1_MODEL,
         )
 
     def _load_credentials_from_file(self, credential_path: str) -> None:
