@@ -19,7 +19,7 @@ _logger.propagate = False
 
 # Import main classes for easier access
 from mobilerun.agent import ResultEvent  # noqa: E402
-from mobilerun.agent.droid import MobileAgent  # noqa: E402
+from mobilerun.agent.droid import MobileAgent, MobileAgentState  # noqa: E402
 from mobilerun.agent.utils.llm_picker import load_llm  # noqa: E402
 
 # Import configuration classes
@@ -53,6 +53,7 @@ from mobilerun.tools import AndroidDriver, DeviceDriver, RecordingDriver  # noqa
 __all__ = [
     # Agent
     "MobileAgent",
+    "MobileAgentState",
     "load_llm",
     "ResultEvent",
     # Tools / Drivers
