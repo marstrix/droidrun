@@ -1,4 +1,7 @@
+import asyncio
 import json
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from llama_index.core.base.llms.types import (
@@ -16,9 +19,26 @@ from mobilerun.agent.providers.setup_service import (
 from mobilerun.agent.utils.oauth.openai_oauth_llm import OpenAIOAuth
 
 
-def _offline_oauth_llm(tmp_path) -> OpenAIOAuth:
+class _AsyncEvents:
+    def __init__(self, events):
+        self._events = iter(events)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._events)
+        except StopIteration:
+            raise StopAsyncIteration from None
+
+    async def aclose(self):
+        return None
+
+
+def _offline_oauth_llm(tmp_path, model: str = "gpt-5.5") -> OpenAIOAuth:
     return OpenAIOAuth(
-        model="gpt-5.5",
+        model=model,
         oauth_access_token="stub-access-token",
         oauth_expires_at_ms=4_102_444_800_000,
         oauth_credential_path=str(tmp_path / "auth-profiles.json"),
@@ -150,3 +170,191 @@ def test_openai_oauth_preserves_text_and_serializes_tool_arguments(tmp_path) -> 
     assert json.loads(tool_item["arguments"]) == {"package": "com.android.settings"}
     assert tool_item["call_id"] == "call-1"
     assert tool_item["name"] == "start_app"
+
+
+@pytest.mark.parametrize("effort", (None, "low", "medium", "high", "xhigh", "max"))
+def test_gpt_6_astra_forwards_supported_reasoning_only(
+    tmp_path, monkeypatch, effort: str | None
+) -> None:
+    llm = OpenAIOAuth(
+        model="gpt-6-astra",
+        reasoning_effort=effort,
+        oauth_access_token="stub-access-token",
+        oauth_expires_at_ms=4_102_444_800_000,
+        oauth_credential_path=str(tmp_path / "auth-profiles.json"),
+        max_tokens=256,
+        additional_kwargs={
+            "include": (
+                "message.output_text.logprobs",
+                "reasoning.encrypted_content",
+            )
+        },
+    )
+    create_response = Mock(
+        return_value=[
+            SimpleNamespace(type="response.output_text.delta", delta="OK"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(output_text="OK"),
+            ),
+        ]
+    )
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(OpenAIOAuth, "_get_client", lambda _self: client)
+
+    runtime_kwargs = {
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "logprobs": True,
+        "top_logprobs": 5,
+    }
+    llm._chat(
+        [ChatMessage(role=MessageRole.USER, content="Reply with OK.")],
+        **runtime_kwargs,
+    )
+
+    request = create_response.call_args.kwargs
+    assert request["model"] == "gpt-6-astra"
+    assert llm.metadata.context_window == 400_000
+    if effort is None:
+        assert "reasoning" not in request
+    else:
+        assert request["reasoning"] == {"effort": effort}
+    assert request["include"] == ["reasoning.encrypted_content"]
+    assert {"temperature", "top_p", "logprobs", "top_logprobs"}.isdisjoint(request)
+
+
+@pytest.mark.parametrize("effort", ("none", "minimal"))
+def test_gpt_6_astra_rejects_unsupported_reasoning_before_request(
+    tmp_path, monkeypatch, effort: str
+) -> None:
+    llm = OpenAIOAuth(
+        model="gpt-6-astra",
+        reasoning_effort=effort,
+        oauth_access_token="stub-access-token",
+        oauth_expires_at_ms=4_102_444_800_000,
+        oauth_credential_path=str(tmp_path / "auth-profiles.json"),
+        max_tokens=256,
+    )
+    create_response = Mock()
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(OpenAIOAuth, "_get_client", lambda _self: client)
+
+    with pytest.raises(ValueError, match=rf"reasoning effort '{effort}'"):
+        llm._chat(
+            [ChatMessage(role=MessageRole.USER, content="Reply with OK.")],
+        )
+
+    create_response.assert_not_called()
+
+
+@pytest.mark.parametrize("source", ("additional_kwargs", "runtime"))
+@pytest.mark.parametrize("effort", ("none", "minimal", "unsupported"))
+def test_gpt_6_astra_rejects_invalid_final_merged_reasoning(
+    tmp_path, monkeypatch, source: str, effort: str
+) -> None:
+    additional_kwargs = (
+        {"reasoning": {"effort": effort}} if source == "additional_kwargs" else None
+    )
+    runtime_kwargs = {"reasoning": {"effort": effort}} if source == "runtime" else {}
+    llm = OpenAIOAuth(
+        model="gpt-6-astra",
+        reasoning_effort="low",
+        oauth_access_token="stub-access-token",
+        oauth_expires_at_ms=4_102_444_800_000,
+        oauth_credential_path=str(tmp_path / "auth-profiles.json"),
+        additional_kwargs=additional_kwargs,
+    )
+    create_response = Mock()
+    client = SimpleNamespace(responses=SimpleNamespace(create=create_response))
+    monkeypatch.setattr(OpenAIOAuth, "_get_client", lambda _self: client)
+
+    with pytest.raises(ValueError, match=rf"reasoning effort '{effort}'"):
+        llm._chat(
+            [ChatMessage(role=MessageRole.USER, content="Reply with OK.")],
+            **runtime_kwargs,
+        )
+
+    create_response.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("source", "effort"),
+    (("additional_kwargs", "xhigh"), ("runtime", "max")),
+)
+def test_gpt_6_astra_accepts_supported_final_merged_reasoning(
+    tmp_path, source: str, effort: str
+) -> None:
+    additional_kwargs = (
+        {"reasoning": {"effort": effort}} if source == "additional_kwargs" else None
+    )
+    runtime_kwargs = {"reasoning": {"effort": effort}} if source == "runtime" else {}
+    llm = OpenAIOAuth(
+        model="gpt-6-astra",
+        reasoning_effort="low",
+        oauth_access_token="stub-access-token",
+        oauth_expires_at_ms=4_102_444_800_000,
+        oauth_credential_path=str(tmp_path / "auth-profiles.json"),
+        additional_kwargs=additional_kwargs,
+    )
+
+    assert llm._sanitize_gpt_6_astra_kwargs(runtime_kwargs)["reasoning"] == {
+        "effort": effort
+    }
+
+
+def test_gpt_6_astra_async_request_uses_exact_model_and_reasoning(
+    tmp_path, monkeypatch
+) -> None:
+    llm = OpenAIOAuth(
+        model="gpt-6-astra",
+        reasoning_effort="low",
+        oauth_access_token="stub-access-token",
+        oauth_expires_at_ms=4_102_444_800_000,
+        oauth_credential_path=str(tmp_path / "auth-profiles.json"),
+        max_tokens=256,
+    )
+    calls = []
+
+    async def create(**kwargs):
+        calls.append(kwargs)
+        return _AsyncEvents(
+            [
+                SimpleNamespace(type="response.output_text.delta", delta="OK"),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(output_text="OK"),
+                ),
+            ]
+        )
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    monkeypatch.setattr(OpenAIOAuth, "_get_aclient", lambda _self: client)
+
+    response = asyncio.run(
+        llm._achat(
+            [ChatMessage(role=MessageRole.USER, content="Reply with OK.")],
+            temperature=0.7,
+            top_logprobs=5,
+        )
+    )
+
+    assert response.message.content == "OK"
+    assert calls == [
+        {
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Reply with OK."}],
+                }
+            ],
+            "model": "gpt-6-astra",
+            "instructions": "You are a helpful coding assistant.",
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+            "store": False,
+            "stream": True,
+            "reasoning": {"effort": "low"},
+        }
+    ]

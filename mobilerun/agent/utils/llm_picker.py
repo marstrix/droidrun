@@ -1,9 +1,11 @@
 import logging
 from typing import TYPE_CHECKING, Any
 
+from llama_index.core.base.llms.types import LLMMetadata
 from llama_index.core.llms.llm import LLM
 
 from mobilerun.agent.providers.anthropic import (
+    ANTHROPIC_FABLE_5_1_MODEL,
     ANTHROPIC_UNSUPPORTED_SAMPLING_PARAMS,
     anthropic_model_context_window,
     anthropic_model_omits_sampling_params,
@@ -65,6 +67,7 @@ ZAI_GLOBAL_API_BASE = "https://api.z.ai/api/paas/v4"
 # Antigravity OAuth catalog. Catch these locally so users get the applicable
 # OAuth choices instead of a remote model-not-found response.
 GEMINI_OAUTH_UNSUPPORTED_MODELS = {
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
@@ -74,6 +77,7 @@ GEMINI_OAUTH_UNSUPPORTED_MODELS = {
 }
 OPENAI_OAUTH_UNSUPPORTED_MODELS = {"gpt-5.3-codex"}
 OPENAI_RESPONSES_MODELS_WITHOUT_SAMPLING_PARAMS = {
+    "gpt-6-astra",
     "gpt-5.5",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
@@ -83,7 +87,13 @@ OPENAI_RESPONSES_MODELS_WITHOUT_SAMPLING_PARAMS = {
     "gpt-5.4-nano",
 }
 OPENAI_RESPONSES_UNSUPPORTED_SAMPLING_PARAMS = {"temperature", "top_p"}
+OPENAI_ASTRA_MODEL = "gpt-6-astra"
+OPENAI_ASTRA_CONTEXT_WINDOW = 1_050_000
+OPENAI_ASTRA_UNSUPPORTED_PARAMS = {"logprobs", "top_logprobs"}
+OPENAI_ASTRA_UNSUPPORTED_INCLUDE = "message.output_text.logprobs"
+OPENAI_ASTRA_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 GOOGLE_GENAI_MODELS_WITHOUT_SAMPLING_PARAMS = {
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
@@ -200,6 +210,54 @@ def _load_openai_responses(*, grok: bool = False, **kwargs: Any) -> LLM:
     from llama_index.llms.openai.utils import to_openai_message_dicts
 
     class MobilerunOpenAIResponses(OpenAIResponses):
+        @staticmethod
+        def _validate_astra_reasoning(reasoning: object) -> None:
+            if reasoning is None:
+                return
+            if not isinstance(reasoning, dict):
+                raise ValueError(
+                    "gpt-6-astra reasoning must be a mapping with an optional "
+                    "'effort' value."
+                )
+            effort = reasoning.get("effort")
+            if effort is None:
+                return
+            if effort not in OPENAI_ASTRA_REASONING_EFFORTS:
+                supported = ", ".join(sorted(OPENAI_ASTRA_REASONING_EFFORTS))
+                raise ValueError(
+                    f"gpt-6-astra does not support reasoning effort {effort!r}; "
+                    f"use one of: {supported}."
+                )
+
+        @classmethod
+        def _sanitize_astra_payload_fields(
+            cls,
+            payload: dict[str, Any],
+            *,
+            drop_model: bool = False,
+        ) -> dict[str, Any]:
+            sanitized = dict(payload)
+            unsupported = (
+                OPENAI_RESPONSES_UNSUPPORTED_SAMPLING_PARAMS
+                | OPENAI_ASTRA_UNSUPPORTED_PARAMS
+            )
+            for param in unsupported:
+                sanitized.pop(param, None)
+
+            include = sanitized.get("include")
+            if isinstance(include, (list, tuple)):
+                filtered_include = [
+                    value
+                    for value in include
+                    if value != OPENAI_ASTRA_UNSUPPORTED_INCLUDE
+                ]
+                sanitized["include"] = filtered_include or None
+
+            cls._validate_astra_reasoning(sanitized.get("reasoning"))
+            if drop_model:
+                sanitized.pop("model", None)
+            return sanitized
+
         def _sanitize_call_kwargs(
             self,
             call_kwargs: dict[str, Any],
@@ -222,15 +280,62 @@ def _load_openai_responses(*, grok: bool = False, **kwargs: Any) -> LLM:
             if _openai_responses_model_omits_sampling_params(effective_model):
                 for param in OPENAI_RESPONSES_UNSUPPORTED_SAMPLING_PARAMS:
                     sanitized.pop(param, None)
+            if (
+                self.model == OPENAI_ASTRA_MODEL
+                or effective_model == OPENAI_ASTRA_MODEL
+            ):
+                sanitized = self._sanitize_astra_payload_fields(sanitized)
+                extra_body = sanitized.get("extra_body")
+                if isinstance(extra_body, dict):
+                    sanitized["extra_body"] = self._sanitize_astra_payload_fields(
+                        extra_body,
+                        drop_model=True,
+                    )
+                if self.model == OPENAI_ASTRA_MODEL:
+                    sanitized["model"] = self.model
             return sanitized
 
         def _get_model_kwargs(self, **kwargs: Any) -> dict[str, Any]:
-            return self._sanitize_call_kwargs(super()._get_model_kwargs(**kwargs))
+            model_kwargs = super()._get_model_kwargs(**kwargs)
+            effective_model = model_kwargs.get("model", self.model)
+            if (
+                (
+                    self.model == OPENAI_ASTRA_MODEL
+                    or effective_model == OPENAI_ASTRA_MODEL
+                )
+                and "reasoning" not in model_kwargs
+                and self.reasoning_options is not None
+            ):
+                model_kwargs["reasoning"] = self.reasoning_options
+            return self._sanitize_call_kwargs(model_kwargs)
+
+        @property
+        def metadata(self) -> LLMMetadata:
+            if self.model != OPENAI_ASTRA_MODEL:
+                return super().metadata
+            return LLMMetadata(
+                context_window=self.context_window or OPENAI_ASTRA_CONTEXT_WINDOW,
+                num_output=self.max_output_tokens or -1,
+                is_chat_model=True,
+                is_function_calling_model=True,
+                model_name=self.model,
+            )
 
         def _sanitize_structured_call_kwargs(
             self, call_kwargs: dict[str, Any]
         ) -> dict[str, Any]:
-            sanitized = self._sanitize_call_kwargs(call_kwargs, omit_tool_choice=grok)
+            merged = dict(call_kwargs)
+            if not grok and self.model == OPENAI_ASTRA_MODEL:
+                configured: dict[str, Any] = {}
+                if self.include is not None:
+                    configured["include"] = self.include
+                if self.reasoning_options is not None:
+                    configured["reasoning"] = self.reasoning_options
+                configured.update(self.additional_kwargs or {})
+                configured.update(merged)
+                merged = configured
+
+            sanitized = self._sanitize_call_kwargs(merged, omit_tool_choice=grok)
             if grok:
                 # The upstream structured adapter passes ``store=self.store``
                 # explicitly. The constructor already pins that field false.
@@ -239,6 +344,11 @@ def _load_openai_responses(*, grok: bool = False, **kwargs: Any) -> LLM:
                 # or a generic caller override to restore it.
                 sanitized.pop("store", None)
                 sanitized.pop("model", None)
+                sanitized.pop("tool_choice", None)
+            elif self.model == OPENAI_ASTRA_MODEL:
+                # The upstream structured adapter supplies these explicitly.
+                sanitized.pop("model", None)
+                sanitized.pop("store", None)
                 sanitized.pop("tool_choice", None)
             return sanitized
 
@@ -453,7 +563,7 @@ def _load_google_genai(**kwargs: Any) -> LLM:
 
 
 def _load_anthropic(**kwargs: Any) -> LLM:
-    from llama_index.core.base.llms.types import LLMMetadata
+    from llama_index.core.types import PydanticProgramMode
     from llama_index.llms.anthropic import Anthropic
 
     class MobilerunAnthropic(Anthropic):
@@ -494,6 +604,12 @@ def _load_anthropic(**kwargs: Any) -> LLM:
     # own loader above and deliberately retains its separate output limit.
     if kwargs.get("max_tokens") is None:
         kwargs["max_tokens"] = 2048
+
+    # Fable 5.1 currently rejects the tool_choice payload produced by the
+    # locked Anthropic adapter for function-based Pydantic programs. Its text
+    # path returns the same validated Pydantic result without that field.
+    if kwargs.get("model") == ANTHROPIC_FABLE_5_1_MODEL:
+        kwargs["pydantic_program_mode"] = PydanticProgramMode.LLM
 
     filtered_kwargs = {k: v for k, v in kwargs.items() if v is not None}
     logger.debug(

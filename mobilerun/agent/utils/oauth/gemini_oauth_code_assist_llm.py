@@ -376,14 +376,25 @@ class GeminiOAuthCodeAssistLLM(CustomLLM):
         for model_id, meta in models.items():
             if not isinstance(meta, dict) or model_id in deprecated:
                 continue
-            if meta.get("isInternal") or not meta.get("displayName"):
+            if meta.get("isInternal"):
                 continue
             if "GEMINI" not in str(meta.get("apiProvider") or ""):
+                continue
+            display_name = meta.get("displayName")
+            is_tiered_model = (
+                isinstance(model_id, str)
+                and model_id.startswith("gemini-")
+                and model_id.endswith("-tiered")
+            )
+            # The live Antigravity catalog omits displayName for its public
+            # tiered agent models. Keep requiring a name for every other model
+            # so nameless tab/aux entries are not exposed as user choices.
+            if not display_name and not is_tiered_model:
                 continue
             out.append(
                 {
                     "id": model_id,
-                    "display_name": meta.get("displayName"),
+                    "display_name": display_name or model_id,
                     "supports_images": bool(meta.get("supportsImages")),
                 }
             )
