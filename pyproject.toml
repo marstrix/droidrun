@@ -59,6 +59,7 @@ anthropic = [
     "anthropic>=0.67.0",
     "llama-index-llms-anthropic>=0.8.6,<0.9.0",
 ]
+deepseek = []
 dev = [
     "black==26.5.1",
     "ruff>=0.13.0",
