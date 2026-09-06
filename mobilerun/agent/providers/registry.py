@@ -50,6 +50,10 @@ GEMINI_API_MODELS: tuple[str, ...] = (
     "gemini-3-flash-preview",
     "gemini-3.1-pro-preview",
 )
+_GEMINI_OAUTH_MODEL_DISPLAY_NAMES: dict[str, str] = {
+    "gemini-3.8-flash-tiered": "gemini-3.8-flash",
+    "gemini-3.7-flash-tiered": "gemini-3.7-flash",
+}
 
 
 PROVIDER_FAMILIES: tuple[ProviderFamilySpec, ...] = (
@@ -302,6 +306,16 @@ def list_models_for_variant(
     family_id: str, auth_mode: str | None = None
 ) -> tuple[str, ...]:
     return resolve_provider_variant(family_id, auth_mode).models
+
+
+def model_display_name_for_variant(
+    family_id: str, auth_mode: str | None, model_id: str
+) -> str:
+    """Return a user-facing model name without changing its canonical id."""
+    variant = resolve_provider_variant(family_id, auth_mode)
+    if variant.id == "gemini_oauth_code_assist":
+        return _GEMINI_OAUTH_MODEL_DISPLAY_NAMES.get(model_id, model_id)
+    return model_id
 
 
 def normalize_model_id_for_variant(

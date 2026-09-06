@@ -32,6 +32,7 @@ from llama_index.core.constants import DEFAULT_TEMPERATURE
 from llama_index.core.llms.callbacks import llm_chat_callback, llm_completion_callback
 from llama_index.core.llms.custom import CustomLLM
 
+from mobilerun.agent.providers.registry import model_display_name_for_variant
 from mobilerun.agent.utils.oauth.login_timeout import (
     OAuthLoginDeadline,
     open_browser_async,
@@ -391,10 +392,13 @@ class GeminiOAuthCodeAssistLLM(CustomLLM):
             # so nameless tab/aux entries are not exposed as user choices.
             if not display_name and not is_tiered_model:
                 continue
+            friendly_name = model_display_name_for_variant("gemini", "oauth", model_id)
+            if friendly_name == model_id:
+                friendly_name = display_name or model_id
             out.append(
                 {
                     "id": model_id,
-                    "display_name": display_name or model_id,
+                    "display_name": friendly_name,
                     "supports_images": bool(meta.get("supportsImages")),
                 }
             )

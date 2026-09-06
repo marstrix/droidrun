@@ -196,7 +196,7 @@ def _models_from_catalog(payload):
     return llm.fetch_available_models(access_token="catalog-token")
 
 
-def test_fetch_available_models_accepts_nameless_tiered_gemini_entries():
+def test_fetch_available_models_uses_friendly_names_for_tiered_gemini_entries():
     models = _models_from_catalog(
         {
             "models": {
@@ -220,12 +220,12 @@ def test_fetch_available_models_accepts_nameless_tiered_gemini_entries():
     assert models == [
         {
             "id": "gemini-3.8-flash-tiered",
-            "display_name": "gemini-3.8-flash-tiered",
+            "display_name": "gemini-3.8-flash",
             "supports_images": True,
         },
         {
             "id": "gemini-3.7-flash-tiered",
-            "display_name": "gemini-3.7-flash-tiered",
+            "display_name": "gemini-3.7-flash",
             "supports_images": True,
         },
         {
@@ -233,6 +233,37 @@ def test_fetch_available_models_accepts_nameless_tiered_gemini_entries():
             "display_name": "Gemini 3.6 Flash (High)",
             "supports_images": True,
         },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("model_id", "expected_display_name"),
+    [
+        ("gemini-3.8-flash-tiered", "gemini-3.8-flash"),
+        ("gemini-3.7-flash-tiered", "gemini-3.7-flash"),
+    ],
+)
+def test_fetch_available_models_overrides_tiered_provider_display_name(
+    model_id: str, expected_display_name: str
+) -> None:
+    models = _models_from_catalog(
+        {
+            "models": {
+                model_id: {
+                    "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+                    "displayName": f"Google label for {model_id}",
+                    "supportsImages": True,
+                }
+            }
+        }
+    )
+
+    assert models == [
+        {
+            "id": model_id,
+            "display_name": expected_display_name,
+            "supports_images": True,
+        }
     ]
 
 

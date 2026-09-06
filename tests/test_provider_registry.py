@@ -2,6 +2,7 @@ import pytest
 
 from mobilerun.agent.providers.registry import (
     list_models_for_variant,
+    model_display_name_for_variant,
     normalize_model_id_for_variant,
     resolve_provider_variant,
 )
@@ -52,6 +53,40 @@ def test_gemini_oauth_catalog_uses_antigravity_consumer_models() -> None:
     assert "gemini-3.5-flash" not in models
     assert "gemini-3.1-flash-lite" not in models
     assert "gemini-3.1-pro-high" not in models
+
+
+@pytest.mark.parametrize(
+    ("family_id", "auth_mode", "model_id", "expected"),
+    [
+        (
+            "gemini",
+            "oauth",
+            "gemini-3.8-flash-tiered",
+            "gemini-3.8-flash",
+        ),
+        (
+            "gemini",
+            "oauth",
+            "gemini-3.7-flash-tiered",
+            "gemini-3.7-flash",
+        ),
+        (
+            "gemini",
+            "oauth",
+            "gemini-3.6-flash-high",
+            "gemini-3.6-flash-high",
+        ),
+        ("gemini", "api_key", "gemini-3.8-flash", "gemini-3.8-flash"),
+        ("openai", "oauth", "gpt-6-astra", "gpt-6-astra"),
+    ],
+)
+def test_model_display_names_preserve_canonical_ids_except_explicit_overrides(
+    family_id: str,
+    auth_mode: str,
+    model_id: str,
+    expected: str,
+) -> None:
+    assert model_display_name_for_variant(family_id, auth_mode, model_id) == expected
 
 
 def test_anthropic_catalogs_include_claude_5_without_changing_defaults() -> None:
